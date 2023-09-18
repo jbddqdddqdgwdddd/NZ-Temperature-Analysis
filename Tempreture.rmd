@@ -1,0 +1,313 @@
+
+# Import
+You goal is to download daily low/high temperature for Auckland between 1 January 1980 and 30 June 2023. Visit the historical API decription page: https://open-meteo.com/en/docs/historical-weather-api and construct a URL that includes the desired data. You will need to set the parameters latitude, longitude, daily, timezone, start_date and end_date. You should use the time zone "Pacific/Auckland".
+
+1 Use the curl command in unix to download the result into the file akl.json. (Hint: look at the resulting file to ensure correctness of your request; the & character has a special meaning in the shell and must be escaped).
+```{bash eval=TRUE}
+curl -o akl.json "https://archive-api.open-meteo.com/v1/archive?latitude=-36.8485&longitude=174.7633&start_date=1980-01-01&end_date=2023-06-30&daily=temperature_2m_max,temperature_2m_min&timezone=Pacific%2FAuckland"
+```
+
+2 Read the result into an R object jd.
+It should have similar structure like this (NOTE: this is NOT the correct data, your values will be different, it just shows the result structure):
+
+   str(jd)
+   List of 9
+    $ latitude             : num -46.5
+    $ longitude            : num 168
+    $ generationtime_ms    : num 864
+    $ utc_offset_seconds   : int 43200
+    $ timezone             : chr "Pacific/Auckland"
+    $ timezone_abbreviation: chr "NZST"
+    $ elevation            : num 10
+    $ daily_units          :List of 3
+     ..$ time              : chr "iso8601"
+     ..$ temperature_2m_max: chr "°C"
+     ..$ temperature_2m_min: chr "°C"
+    $ daily                :List of 3
+     ..$ time              : chr [1:12234] "1990-01-01" "1990-01-02" "1990-01-03" "1990-01-04" ...
+     ..$ temperature_2m_max: num [1:12234] 15 17.9 16.6 20.1 13.5 13 17.8 15.7 13.2 14.1 ...
+     ..$ temperature_2m_min: num [1:12234] 8.7 9.9 11.7 9.9 9.1 9.6 7.2 10.1 9.4 10.8 ...
+```{r}
+library(jsonlite)
+
+# extract json data
+jd <- fromJSON("akl.json")
+str(jd)
+```
+# Data description
+The data used in this project is from the OpenMeteo.com API and covers the daily minimum and maximum temperatures for Auckland, New Zealand, from January 1, 1980, to June 30, 2023.
+
+In addition to Auckland's data, we also collected the highest temperature data for the entire year of 2022 from the five cities with largest population in New Zealand.
+
+The dataset is organized into three main columns: Date (in the format "YYYY-MM-DD" representing the date), Minimum Temperature, and Maximum Temperature. Both the minimum and maximum temperatures are measured in degrees Celsius. Through this data, we can analyze the fluctuations in temperature over time and observe the temperature differences among different cities.
+
+
+# Clean
+3. Create a data frame d with the columns day, min and max from the object jd such that it looks like this:
+```{r}
+d <- data.frame(
+  day = as.Date(jd$daily$time),
+  min = jd$daily$temperature_2m_min,
+  max = jd$daily$temperature_2m_max
+)
+```
+
+
+
+# Explore
+4. Check if the data is complete. Verify the sanity of the data.
+```{r}
+# check for missing value
+apply(d, 2, function(x) any(is.na(x)))
+
+# check for missing date
+all(diff(d$day) == 1)
+
+# check for abnormal temperature
+range(d$min)
+range(d$max)
+
+# check for abnormal range
+all(d$min <= d$max)
+
+# The data is complete and sanitized
+
+```
+
+# Model
+
+5. We want to focus on the evolution of yearly average temperatures over time. In order to do that, let us define a daily mean estimate by taking the average of the minimum and maximum each day. Then for each year compute the averge of those daily averages. It should look something like this:
+
+   str(avg)
+   'data.frame': 44 obs. of  2 variables:
+    $ year: int  1980 1981 1982 1983 1984 1985 1986 1987 1988 1989 ...
+    $ avg : num  14.6 15.2 14.5 14.4 15.1 ...
+```{r}
+# add daily mean tmp
+d$daily_mean <- (d$min + d$max) / 2
+
+# add yearly mean tmp
+d$year <- as.numeric(format(d$day, "%Y"))
+avg_data <- aggregate(daily_mean ~ year, data = d, FUN = mean)
+
+colnames(avg_data) <- c("year", "avg")
+
+str(avg_data)
+```
+
+Use years 1980-2014 as training set and remaining data as a test set. Fit two models to the training data: a simple overall mean and a linear regression model with the year as a predictor variable. Print the models and compute RMSE for the test set. Plot all the data and predictions.
+
+```{r}
+# create training set and test set
+train_data <- avg_data[avg_data$year <= 2014,]
+test_data <- avg_data[avg_data$year > 2014,]
+
+# fit model
+mean_model <- mean(train_data$avg)
+linear_model <- lm(avg ~ year, data = train_data)
+mean_model
+linear_model
+
+# prediction
+mean_pred <- rep(mean_model, nrow(test_data))
+linear_pred <- predict(linear_model, newdata = test_data)
+
+# calculate RMSE
+mean_rmse <- sqrt(mean((test_data$avg - mean_pred)^2))
+linear_rmse <- sqrt(mean((test_data$avg - linear_pred)^2))
+cat("Mean model RMSE:", mean_rmse)
+cat("\nLinear model RMSE:", linear_rmse)
+
+test_data$mean_pred <- mean_pred
+test_data$linear_pred <- linear_pred
+
+# plot
+# full data set
+plot(avg_data$year, avg_data$avg, type = "l", col = "blue", xlab = "Year", ylab = "Average Temperature", main = "Temperature over Time", ylim = range(avg_data$avg))
+
+# mean model red
+lines(test_data$year, mean_pred, col = "red")
+
+# linear model blue
+lines(test_data$year, linear_pred, col = "green")
+
+legend("topleft", legend = c("Full Data", "Mean Model", "Linear Model"),
+       col = c("blue", "red", "green"), lty = 1)
+
+
+```
+
+Do you see a problem in the test set? Explain it (use R code to provide evidence for your hypothesis), propose a way to handle it, implement it using R and repeat the model validation. Comment on the suitability of the two models.
+
+We can observe from the line plot that the data in the training set and the test set shows different trends. We can draw a scatter plot to identify.
+
+```{r}
+# test and training set data distribution
+plot(train_data$year, train_data$avg, pch = 16, col = "blue", xlab = "Year", ylab = "Average Temperature", main = "Temperature over Time", xlim = range(avg_data$year), ylim = range(avg_data$avg))
+
+points(test_data$year, test_data$avg, pch = 16, col = "red")
+
+legend("topleft", legend = c("Training Data", "Test Data"),
+       col = c("blue", "red"), pch = c(16, 16))
+
+```
+
+The scatter plot is obvious that they show different trends(the test set shows a growing trend). The model fitting in this circumstance lead to bad prediction, and this may be the reason why our prediction shows a different pattern with the test set.
+
+To handle this problem, we can fit a non-linear model to capture complicate trends.
+```{r}
+# polynomial model
+polynomial_model <- lm(avg ~ poly(year, 2), data = train_data)
+summary(polynomial_model)
+
+# prediction
+polynomial_pred <- predict(polynomial_model, newdata = test_data)
+
+# RMSE
+polynomial_rmse <- sqrt(mean((test_data$avg - polynomial_pred)^2))
+cat("Polynomial model RMSE:", polynomial_rmse)
+
+# plot
+plot(avg_data$year, avg_data$avg, pch = 16, col = "black", xlab = "Year", ylab = "Average Temperature", main = "Temperature over Time", ylim = range(avg_data$avg))
+
+# polynomial model
+lines(test_data$year, polynomial_pred, col = "red")
+
+legend("topleft", legend = c("Full Data", "Polynomial Model Prediction"), col = c("black","red"), lty = 1)
+
+
+
+
+```
+
+We can see that polynomial model has a smaller RMSE than linear model and mean model. From the plot, we can observe a patterns that are closer to the original test data. This means that the polynomial model performs better than linear model. 
+
+Comment on the suitability of the two models:
+We compared the mean model and the linear regression model. The mean model is simpler, but lack of flexibility, thus it may not perform well in capturing the temperature's changing trend. The linear regression model captures the temperature's trend by using the year as a predictor, providing better predictive capability. In this case, the linear model performed better on the test dataset.
+
+
+# Revisit
+
+Revisit
+You have found a data source listing all notable cities in New Zealand in a table: https://stat.auckland.ac.nz/~su/769/demo/nzcities.html.
+
+Write R code that reads the html page into R and extracts the contained table into a data frame cities (Hint: use XPath to find the <table> elements). It should look something like this:
+
+   'data.frame': 36 obs. of  9 variables:
+    $ city             : chr  "Auckland" "Wellington" "Christchurch" "Manukau City" ...
+    $ lat              : num  -36.9 -41.3 -43.5 -37 -36.8 ...
+    $ lng              : num  175 175 173 175 175 ...
+    $ country          : chr  "New Zealand" "New Zealand" "New Zealand" "New Zealand" ...
+    $ iso2             : chr  "NZ" "NZ" "NZ" "NZ" ...
+    $ admin_name       : chr  "Auckland" "Wellington" "Canterbury" "Auckland" ...
+    $ capital          : chr  "admin" "primary" "admin" "" ...
+    $ population       : int  1470100 418500 377200 375600 208100 205605 169300 135000 106200 103400 ...
+    $ population_proper: int  1470100 418500 377200 375600 208100 205605 169300 135000 106200 103400 ...
+Use the contained coordinates to fetch the maximum daily temperatures for the most populous 5 cities for the period from 2022-01-01 to 2022-12-31 from the Open Meteo API and plot the result. It should look something like this:
+
+```{r}
+# handel html
+library(rvest)
+
+# extract data from html
+url <- "https://stat.auckland.ac.nz/~su/769/demo/nzcities.html"
+data_html <- read_html(url)
+
+# use XPath to get table
+table <- data_html %>%
+  html_nodes(xpath = "//table") %>%
+  .[[1]] %>%
+  html_table()
+
+cities <- as.data.frame(table)
+str(cities)
+
+
+```
+
+```{r}
+# top 5 cities
+top_cities <- cities[order(-cities$population),][1:5,]
+
+# date range
+start_date <- "2022-01-01"
+end_date <- "2022-12-31"
+
+temp_data <- data.frame()
+
+# url format
+# https://archive-api.open-meteo.com/v1/archive?latitude=52.52&longitude=13.41&start_date=2022-01-01&end_date=2022-12-31&daily=temperature_2m_max&timezone=Pacific%2FAuckland
+
+# fetch data by urls
+for (i in 1:5) {
+  city <- top_cities$city[i]
+  lat <- top_cities$lat[i]
+  lng <- top_cities$lng[i]
+  
+  # create URL
+  url <- paste0("https://archive-api.open-meteo.com/v1/archive?",
+                "latitude=", lat,
+                "&longitude=", lng,
+                "&start_date=", start_date,
+                "&end_date=", end_date,
+                "&daily=temperature_2m_max",
+                "&timezone=Pacific/Auckland")
+  
+  # get data set
+  data <- jsonlite::fromJSON(url)
+  
+  # extract date and temp
+  top_cities_tmp <- data.frame(
+    date = as.Date(data$daily$time),
+    temp = data$daily$temperature_2m_max,
+    city = city
+  )
+  # bind data
+  temp_data <- rbind(temp_data, top_cities_tmp)
+}
+
+# plot canvas
+# use xaxt to diminish default x label
+plot(NA, NA, xlim = c(as.Date(start_date), as.Date(end_date)), ylim = range(temp_data$temp), xlab = "Month", ylab = "Max Daily Temperature", type = "n", xaxt = "n")
+
+# self-defined x label: month
+axis.Date(1, at = seq(as.Date(start_date), as.Date(end_date)+31, by = "2 months"), format = "%b")
+# colors as cities
+colors <- c("black", "red", "green", "blue", "light blue")
+
+# lines
+for (i in 1:5) {
+  city_data <- temp_data[temp_data$city == top_cities$city[i],]
+  lines(city_data$date, city_data$temp, col = colors[i], lwd = 1.7)
+}
+
+legend("bottomleft", legend = top_cities$city, col = colors, lty = 1, lwd = 1.7, cex = 0.7)
+
+
+
+
+
+```
+
+Comment on the plot.
+Overall, this graph provides an intuitive perspective on the temperature trends of the five main cities in New Zealand.
+
+From the line plot, we can see that the temperature trends of the five major cities in New Zealand shows similar seasonal pattern. The temperatures are lowest around August (10-15 degrees Celsius) and then start to rise, reaching their peak in January (20-30+ degrees Celsius), after which they gradually decrease.
+
+There are differences in temperatures among the cities. Cities in the northern part, such as Auckland, Manukau City, and Waitakere, have higher average temperatures compared to Christchurch and Wellington. Christchurch, in particular, experiences larger diurnal temperature variations compared to other cities, and it also exhibits greater seasonal temperature differences.
+
+# Summary
+
+This report analyzes the temperature data of major cities in New Zealand using OpenMeteo.com API. Through this analysis, we aim to understand the historical trends and annual variations in temperatures.
+
+Data Acquisition and Processing:
+We downloaded the daily minimum and maximum temperature data for Auckland from 01/01/1980, to 30/06/2023, using the OpenMeteo API. We obtained tabular data for all major cities in New Zealand and extracted the coordinates of the five most populous cities.
+
+Data Analysis and Modeling:
+We checked the integrity and reasonableness of the temperature data for Auckland. We calculated the average daily temperature for each year by computing the mean of the daily minimum and maximum temperatures.
+We fitted two models using the data from 1980 to 2014 as the training set: a simple overall mean model and a linear regression model with the year as a predictive variable.
+We analyzed the RMSE of these models and performed polynomial models to obtain more accurate predictions.
+
+Visual Analysis:
+We extracted the highest daily temperatures for the five most populous cities in New Zealand in the year 2022 and visualized the results as a line graph using R's native graphics functions.
+This graph displayed the temperature differences and seasonal variations among these cities throughout the year.
